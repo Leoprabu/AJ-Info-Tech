@@ -1,0 +1,38 @@
+aj-infotech/
+├── server/
+│   ├── package.json
+│   ├── schema.sql
+│   ├── config/db.js
+│   ├── middleware/auth.js
+│   ├── routes/crud.js
+│   └── server.js
+└── client/
+    ├── package.json
+    ├── public/
+    │   ├── index.html
+    │   └── logo.png          ← PUT YOUR LOCAL LOGO HERE
+    └── src/
+        ├── index.js
+        ├── App.js
+        ├── api.js
+        ├── AuthContext.js
+        ├── utils.js
+        ├── styles.css
+        ├── components/
+        │   ├── ui.js
+        │   ├── Login.jsx
+        │   └── Layout.jsx
+        └── pages/
+            ├── Dashboard.jsx
+            ├── Settings.jsx
+            ├── shared/EnquiryPage.jsx
+            ├── shared/StaffPage.jsx
+            ├── institute/Students.jsx
+            ├── institute/Courses.jsx
+            ├── institute/Payments.jsx
+            ├── institute/Certificates.jsx
+            ├── institute/Alumni.jsx
+            ├── it/Clients.jsx
+            ├── it/Projects.jsx
+            ├── it/Payments.jsx
+            └── finance/Expenses.jsx, OtherIncome.jsx, Accounts.jsx, Reports.jsx
