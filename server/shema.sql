@@ -126,3 +126,16 @@ CREATE TABLE IF NOT EXISTS other_income (
   income_date DATE, source VARCHAR(60), description TEXT, amount DECIMAL(10,2),
   method VARCHAR(20), received_from VARCHAR(100), remark TEXT
 );
+CREATE TABLE IF NOT EXISTS monthly_expenses (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  item VARCHAR(150) NOT NULL,
+  amount DECIMAL(10,2) DEFAULT 0,            -- current pending amount (cycle)
+  base_amount DECIMAL(10,2) DEFAULT 0,       -- recurring monthly amount (e.g. salary)
+  source_type ENUM('manual','salary') DEFAULT 'manual',
+  source_table VARCHAR(20) DEFAULT NULL,     -- 'trainer' | 'it' (for salary items)
+  source_id INT DEFAULT NULL,
+  status ENUM('pending','paid','complete') DEFAULT 'pending',
+  paid_cycle DECIMAL(10,2) DEFAULT 0,        -- total paid in current cycle
+  last_reset_month VARCHAR(7) DEFAULT NULL,  -- 'YYYY-MM' of last auto-refill
+  created_date DATE
+);

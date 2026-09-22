@@ -10,7 +10,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '60mb' }));
 
-/* ---------- helpers (FIX: correct destructuring + no-crash wrapper) ---------- */
+/* ---------- helpers ---------- */
 const one = async (sql, params = []) => {
   const [rows] = await db.query(sql, params);
   return (rows && rows[0]) || {};
@@ -25,6 +25,8 @@ const wrap = fn => (req, res, next) =>
     console.error('API Error:', e.message);
     if (!res.headersSent) res.status(500).json({ msg: 'Server error: ' + e.message });
   });
+const curYM = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`; };
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
 /* ---------------- BOOTSTRAP DB (schema embedded) ---------------- */
 const SCHEMA = [
@@ -137,8 +139,75 @@ const SCHEMA = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     income_date DATE, source VARCHAR(60), description TEXT, amount DECIMAL(10,2),
     method VARCHAR(20), received_from VARCHAR(100), remark TEXT
+  )`,
+  /* ===== NEW: Monthly (Primary) Expenses ===== */
+  `CREATE TABLE IF NOT EXISTS monthly_expenses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    item VARCHAR(150) NOT NULL,
+    amount DECIMAL(10,2) DEFAULT 0,
+    base_amount DECIMAL(10,2) DEFAULT 0,
+    source_type ENUM('manual','salary') DEFAULT 'manual',
+    source_table VARCHAR(20) DEFAULT NULL,
+    source_id INT DEFAULT NULL,
+    status ENUM('pending','paid','complete') DEFAULT 'pending',
+    paid_cycle DECIMAL(10,2) DEFAULT 0,
+    last_reset_month VARCHAR(7) DEFAULT NULL,
+    created_date DATE
   )`
 ];
+
+/* ================= MONTHLY EXPENSES : AUTO ENGINE =================
+   1) Auto-refill on the 10th of every month (carry-forward unpaid)
+   2) Auto-sync staff names + salary from trainers & it_staff
+=================================================================== */
+async function runMonthlyReset() {
+  const now = new Date();
+  if (now.getDate() < 10) return;                       // only from the 10th onwards
+  const ym = curYM();
+  const rows = await all(
+    `SELECT id, base_amount, last_reset_month FROM monthly_expenses
+     WHERE (last_reset_month IS NULL OR last_reset_month <> ?) AND base_amount > 0`, [ym]);
+  for (const r of rows) {
+    let months = 1;
+    if (r.last_reset_month) {
+      const [y1, m1] = String(r.last_reset_month).split('-').map(Number);
+      months = (now.getFullYear() - y1) * 12 + (now.getMonth() + 1 - m1);
+      if (months < 1) months = 1;
+    }
+    // carry-forward: unpaid 10000 stays, next month 10000 + 10000 = 20000
+    await db.query(
+      `UPDATE monthly_expenses
+       SET amount = amount + (base_amount * ?), paid_cycle = 0,
+           status = 'pending', last_reset_month = ?
+       WHERE id = ?`, [months, ym, r.id]);
+  }
+  if (rows.length) console.log(`✔ Monthly expenses auto-refilled for ${ym} (${rows.length} item(s))`);
+}
+
+async function syncStaffSalaries() {
+  const trainers = await all(`SELECT id, name, salary FROM trainers WHERE status='active' AND salary > 0`);
+  const itstaff  = await all(`SELECT id, name, salary FROM it_staff  WHERE status='active' AND salary > 0`);
+  const ym = curYM();
+  const list = [
+    ...trainers.map(t => ({ ...t, tbl: 'trainer' })),
+    ...itstaff.map(t => ({ ...t, tbl: 'it' }))
+  ];
+  for (const s of list) {
+    const ex = await one(
+      `SELECT id FROM monthly_expenses WHERE source_type='salary' AND source_table=? AND source_id=?`,
+      [s.tbl, s.id]);
+    if (ex.id) {
+      await db.query(`UPDATE monthly_expenses SET item=?, base_amount=? WHERE id=?`,
+        [s.name, s.salary, ex.id]);
+    } else {
+      await db.query(
+        `INSERT INTO monthly_expenses
+         (item, amount, base_amount, source_type, source_table, source_id, status, last_reset_month, created_date)
+         VALUES (?,?,?,'salary',?,?, 'pending', ?, ?)`,
+        [s.name, s.salary, s.salary, s.tbl, s.id, ym, todayStr()]);
+    }
+  }
+}
 
 (async () => {
   try {
@@ -151,7 +220,7 @@ const SCHEMA = [
       await db.query(
         `INSERT INTO users (name,username,password,email,role,permissions) VALUES (?,?,?,?,?,?)`,
         ['Super Admin', 'admin', hash, 'admin@ajinfotech.in', 'superadmin',
-         JSON.stringify(['inst.enquiries','inst.students','inst.courses','inst.payment','inst.certificate','inst.trainers','inst.alumni','it.enquiries','it.clients','it.staffs','it.projects','it.payment','fin.expenses','fin.otherincome','fin.accounts','fin.report'])]);
+         JSON.stringify(['inst.enquiries','inst.students','inst.courses','inst.payment','inst.certificate','inst.trainers','inst.alumni','it.enquiries','it.clients','it.staffs','it.projects','it.payment','fin.expenses','fin.otherincome','fin.monthly','fin.accounts','fin.report'])]);
       console.log('✔ Seeded Super Admin → admin / admin123');
     }
     const s = await one('SELECT COUNT(*) c FROM settings');
@@ -160,6 +229,8 @@ const SCHEMA = [
       ['AJ INFO TECH',
        '12c, 1st Floor, Bus Stand Road, Merin Super Market, Jayankondam, Ariyalur- 621802',
        'info@ajinfotech.in', '9003485703', '33ANHPL4615N1ZT']);
+    await runMonthlyReset().catch(e => console.error('⚠ reset:', e.message));
+    await syncStaffSalaries().catch(e => console.error('⚠ salary sync:', e.message));
     console.log('✔ Database ready');
   } catch (e) {
     console.error('✖ Database error:', e.message);
@@ -249,7 +320,7 @@ app.put('/api/settings', auth, permit('users'), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* ---------------- DASHBOARD STATS (FIXED) ---------------- */
+/* ---------------- DASHBOARD STATS ---------------- */
 app.get('/api/dashboard/stats', auth, wrap(async (req, res) => {
   const active   = await num('SELECT COUNT(*) a FROM students');
   const todayAdm = await num('SELECT COUNT(*) a FROM students WHERE joined_date=CURDATE()');
@@ -303,8 +374,7 @@ app.post('/api/inst/students/:id/complete', auth, permit('inst.students'), wrap(
   const s = await one(
     'SELECT s.*, c.course_name FROM students s LEFT JOIN courses c ON s.course_id=c.id WHERE s.id=?', [req.params.id]);
   if (!s.id) return res.status(404).json({ msg: 'Not found' });
-  const d = new Date().toISOString().slice(0, 10);
-  // CHANGED: move student to ALUMNI ONLY (no auto certificate)
+  const d = todayStr();
   await db.query('INSERT INTO alumni (application_no,name,course,mobile,joined_date,completed_date) VALUES (?,?,?,?,?,?)',
     [s.application_no, s.name, s.course_name, s.mobile, s.joined_date, d]);
   await db.query('DELETE FROM students WHERE id=?', [req.params.id]);
@@ -359,7 +429,7 @@ app.post('/api/inst/payments', auth, permit('inst.payment'), wrap(async (req, re
   const receipt_no = 'A' + String(n + 1).padStart(5, '0');
   const [r] = await db.query(
     'INSERT INTO institute_payments (student_id,receipt_no,amount,amount_words,method,pay_date,remark) VALUES (?,?,?,?,?,?,?)',
-    [student_id, receipt_no, amount, amount_words, method, pay_date || new Date().toISOString().slice(0, 10), remark || '']);
+    [student_id, receipt_no, amount, amount_words, method, pay_date || todayStr(), remark || '']);
   res.json({ id: r.insertId, receipt_no });
 }));
 
@@ -412,11 +482,81 @@ app.post('/api/it/payments', auth, permit('it.payment'), wrap(async (req, res) =
   const receipt_no = 'Aj' + String(n + 1).padStart(5, '0');
   const [r] = await db.query(
     'INSERT INTO it_payments (project_id,receipt_no,amount,amount_words,method,pay_date,remark) VALUES (?,?,?,?,?,?,?)',
-    [project_id, receipt_no, amount, amount_words, method, pay_date || new Date().toISOString().slice(0, 10), remark || '']);
+    [project_id, receipt_no, amount, amount_words, method, pay_date || todayStr(), remark || '']);
   res.json({ id: r.insertId, receipt_no });
 }));
 
-/* ---------------- FINANCE : SUMMARY (FIXED) ---------------- */
+/* ============ MONTHLY (PRIMARY) EXPENSES ROUTES ============ */
+app.get('/api/fin/monthly', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  await runMonthlyReset();          // auto-refill on/after 10th
+  await syncStaffSalaries();        // auto-pull staff names + salary
+  res.json(await all(`SELECT * FROM monthly_expenses
+                      ORDER BY source_type='salary' DESC, item ASC`));
+}));
+
+app.post('/api/fin/monthly', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  const { item, amount } = req.body;
+  if (!item || !Number(amount)) return res.status(400).json({ msg: 'Item and amount are required' });
+  const [r] = await db.query(
+    `INSERT INTO monthly_expenses (item, amount, base_amount, source_type, status, last_reset_month, created_date)
+     VALUES (?,?,?,'manual','pending',?,?)`,
+    [item, Number(amount), Number(amount), curYM(), todayStr()]);
+  res.json({ id: r.insertId });
+}));
+
+app.put('/api/fin/monthly/:id', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  const b = req.body, sets = [], vals = [];
+  if (b.item !== undefined)        { sets.push('item=?');        vals.push(b.item); }
+  if (b.amount !== undefined)      { sets.push('amount=?');      vals.push(Number(b.amount)); }
+  if (b.base_amount !== undefined) { sets.push('base_amount=?'); vals.push(Number(b.base_amount)); }
+  if (sets.length) { vals.push(req.params.id);
+    await db.query(`UPDATE monthly_expenses SET ${sets.join(',')} WHERE id=?`, vals); }
+  res.json({ ok: true });
+}));
+
+app.delete('/api/fin/monthly/:id', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  // deletes only this monthly row — payment history in `expenses` is NEVER touched
+  await db.query('DELETE FROM monthly_expenses WHERE id=?', [req.params.id]);
+  res.json({ ok: true });
+}));
+
+// Pay — full or partial. Payment is recorded into `expenses` (books) automatically.
+app.post('/api/fin/monthly/:id/pay', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  const { pay_type, amount, method } = req.body;
+  const item = await one('SELECT * FROM monthly_expenses WHERE id=?', [req.params.id]);
+  if (!item.id) return res.status(404).json({ msg: 'Item not found' });
+  const pending = Number(item.amount);
+  if (pending <= 0) return res.status(400).json({ msg: 'Already paid' });
+  const pay = pay_type === 'full' ? pending : Number(amount);
+  if (!pay || pay <= 0) return res.status(400).json({ msg: 'Enter a valid amount' });
+  if (pay > pending) return res.status(400).json({ msg: 'Amount exceeds pending balance' });
+
+  await db.query(
+    `INSERT INTO expenses (expense_date, category, description, amount, method, paid_to, voucher_no, remark)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [todayStr(),
+     item.source_type === 'salary' ? 'Salary' : 'Monthly Expense',
+     `${item.item} — monthly expense payment${pay < pending ? ' (partial)' : ''}`,
+     pay, method || 'Cash', item.item,
+     'ME' + String(item.id).padStart(3, '0') + '-' + Date.now().toString().slice(-6),
+     'Auto-recorded from Monthly Expenses']);
+
+  const newAmount = Math.max(0, pending - pay);
+  const newPaid = Number(item.paid_cycle || 0) + pay;
+  const status = newAmount <= 0 ? 'paid' : 'pending';
+  await db.query('UPDATE monthly_expenses SET amount=?, paid_cycle=?, status=? WHERE id=?',
+    [newAmount, newPaid, status, req.params.id]);
+  res.json({ ok: true, amount: newAmount, status });
+}));
+
+// Complete — clears pending amount WITHOUT recording an expense.
+// Next month on the 10th the base amount is added again automatically.
+app.post('/api/fin/monthly/:id/complete', auth, permit('fin.monthly'), wrap(async (req, res) => {
+  await db.query(`UPDATE monthly_expenses SET amount=0, status='complete' WHERE id=?`, [req.params.id]);
+  res.json({ ok: true });
+}));
+
+/* ---------------- FINANCE : SUMMARY (+ monthly expense cards) ---------------- */
 app.get('/api/finance/summary', auth, permit('fin.accounts', 'fin.report'), wrap(async (req, res) => {
   const { from, to } = req.query;
   const has = !!(from && to);
@@ -436,11 +576,15 @@ app.get('/api/finance/summary', auth, permit('fin.accounts', 'fin.report'), wrap
     ...(await g(`SELECT expense_date d,'Expense' type, description detail, amount v FROM expenses WHERE 1=1 ${rng('expense_date')}`))
   ].sort((a, b) => (b.d > a.d ? 1 : -1));
 
+  const me = await one('SELECT IFNULL(SUM(paid_cycle),0) pt, IFNULL(SUM(amount),0) pd FROM monthly_expenses');
+
   const instIncome = Number(x1.v), itIncome = Number(x2.v),
         otherIncome = Number(x3.v), expenses = Number(x4.v);
   const totalIncome = instIncome + itIncome + otherIncome;
   res.json({ instIncome, itIncome, otherIncome, expenses, totalIncome,
-    net: totalIncome - expenses, rows });
+    net: totalIncome - expenses, rows,
+    meTotal: Number(me.pt),              // Monthly Expenses paid (this cycle)
+    meOutstanding: Number(me.pd) });     // Outstanding unpaid (monthly expenses)
 }));
 
 /* ---------------- GENERIC CRUD MOUNTS ---------------- */
