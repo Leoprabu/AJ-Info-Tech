@@ -1,5 +1,5 @@
 import axios from 'axios';
-const api = axios.create({ baseURL: '/api' });
+const api = axios.create({ 'https://aj-info-tech.onrender.com': '/api' });
 api.interceptors.request.use(cfg => {
   const t = localStorage.getItem('aj_token');
   if (t) cfg.headers.Authorization = 'Bearer ' + t;
