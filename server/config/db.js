@@ -1,9 +1,9 @@
 const mysql = require('mysql2/promise');
 const pool = mysql.createPool({
-  host: 'sql309.infinityfree.com',
-  user: 'if0_42221348',
-  password: 'Leoprabu037',            // ⚠️ set your MySQL password
-  database: 'if0_42221348_ajinfotech',
+  host: 'bvjskz9w9uillrpjcfvb-mysql.services.clever-cloud.com',
+  user: 'uqbpamekwnznw9ux',
+  password: 'i2IwXzorz7JflEVBFanG',            // ⚠️ set your MySQL password
+  database: 'bvjskz9w9uillrpjcfvb',
   port: '3306',
   waitForConnections: true,
   connectionLimit: 10,
