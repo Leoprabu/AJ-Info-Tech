@@ -4,7 +4,7 @@ const pool = mysql.createPool({
   user: 'if0_42221348',
   password: 'Leoprabu037',            // ⚠️ set your MySQL password
   database: 'if0_42221348_ajinfotech',
-  port: '3306'
+  port: '3306',
   waitForConnections: true,
   connectionLimit: 10,
   dateStrings: true
